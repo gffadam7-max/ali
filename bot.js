@@ -7,8 +7,8 @@ const readline = require('readline')
 //  CONFIG — modifie ici
 // ══════════════════════════════════════
 const CONFIG = {
-  host: 'play.mycraft.net',   // adresse du serveur
-  port: 25565,
+  host: '141.11.185.41',   // adresse du serveur
+  port: 50638,
   username: 'CraftBot_01',    // username du bot
   version: '1.20.1',
 }
