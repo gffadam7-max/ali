@@ -4,12 +4,12 @@ const pvp = require('mineflayer-pvp').plugin
 const readline = require('readline')
 
 // ══════════════════════════════════════
-//  CONFIG — modifie ici
+//  CONFIG
 // ══════════════════════════════════════
 const CONFIG = {
-  host: '141.11.185.41',   // adresse du serveur
+  host: '141.11.185.41',  // <-- mets ton serveur ici
   port: 50638,
-  username: 'CraftBot_01',    // username du bot
+  username: 'CraftBot_01',
   version: '1.20.1',
 }
 
@@ -20,9 +20,8 @@ const bot = mineflayer.createBot(CONFIG)
 bot.loadPlugin(pathfinder)
 bot.loadPlugin(pvp)
 
-let pvpMode = 0         // 0=off, 1=facile, 2=moyen, 3=maitre, 4=elytra
+let pvpMode = 0
 let currentTarget = null
-let totemDetected = false
 let waitingAfterTotem = false
 let kills = 0
 let totems = 0
@@ -32,7 +31,7 @@ let totems = 0
 // ══════════════════════════════════════
 bot.once('spawn', () => {
   log('ok', 'Bot connecté à ' + CONFIG.host)
-  log('ok', 'Tape "pvp 1" à "pvp 4" pour activer un mode')
+  log('ok', 'Commandes: pvp 1 / pvp 2 / pvp 3 / pvp 4 / stop / status')
   setupPathfinder()
   startTickLoop()
 })
@@ -40,59 +39,77 @@ bot.once('spawn', () => {
 bot.on('chat', (username, message) => {
   if (username === bot.username) return
   const msg = message.toLowerCase().trim()
-
-  if (msg === 'pvp 1') { setPvpMode(1, username); return }
-  if (msg === 'pvp 2') { setPvpMode(2, username); return }
-  if (msg === 'pvp 3') { setPvpMode(3, username); return }
-  if (msg === 'pvp 4') { setPvpMode(4, username); return }
-  if (msg === 'stop')  { stopBot(); return }
-  if (msg === 'status') { sendStatus(); return }
+  if (msg === 'pvp 1') setPvpMode(1, username)
+  else if (msg === 'pvp 2') setPvpMode(2, username)
+  else if (msg === 'pvp 3') setPvpMode(3, username)
+  else if (msg === 'pvp 4') setPvpMode(4, username)
+  else if (msg === 'stop') stopBot()
+  else if (msg === 'status') sendStatus()
 })
 
-bot.on('entityHurt', (entity) => {
-  if (entity === bot.entity) {
-    if (bot.health < 6) healSelf()
+// physicsTick (corrigé — plus de deprecated warning)
+bot.on('physicsTick', () => {
+  if (!currentTarget || pvpMode === 0) return
+  const dist = bot.entity.position.distanceTo(currentTarget.position)
+
+  // Critique : saute avant de frapper si mode >= 2
+  if (pvpMode >= 2 && dist < 4 && bot.entity.onGround) {
+    bot.setControlState('jump', true)
+    setTimeout(() => bot.setControlState('jump', false), 150)
   }
 })
 
-// Détection du totem : le joueur survit avec exactement 1 HP
+bot.on('entityHurt', (entity) => {
+  if (entity === bot.entity && bot.health < 6) healSelf()
+})
+
+// Détection totem : le joueur reçoit régénération après quasi-mort
 bot.on('entityEffect', (entity, effect) => {
-  if (currentTarget && entity.username === currentTarget.username) {
-    // ID 5 = Regeneration (activé par le totem)
-    if (effect.id === 5 || effect.id === 10) {
-      if (!waitingAfterTotem) {
-        totemDetected = true
-        totems++
-        log('warn', `TOTEM détecté sur ${entity.username} ! Recul 3s puis re-kill...`)
-        waitingAfterTotem = true
-        bot.pvp.stop()
-        bot.setControlState('back', true)
-        setTimeout(() => {
-          bot.setControlState('back', false)
-          waitingAfterTotem = false
-          if (currentTarget && pvpMode > 0) {
-            log('ok', `Re-attaque de ${currentTarget.username} après totem`)
-            attackTarget(currentTarget)
-          }
-        }, 3000)
+  if (!currentTarget) return
+  if (entity.username !== currentTarget.username) return
+  // effect 10 = Regeneration (activé par totem)
+  if ((effect.id === 10 || effect.id === 5) && !waitingAfterTotem) {
+    waitingAfterTotem = true
+    totems++
+    log('warn', 'Totem activé par ' + entity.username + ' ! Recul 3s puis re-kill...')
+    bot.pvp.stop()
+    bot.clearControlStates()
+    bot.setControlState('back', true)
+    setTimeout(() => {
+      bot.setControlState('back', false)
+      waitingAfterTotem = false
+      if (currentTarget && pvpMode > 0) {
+        log('ok', 'Re-attaque après totem sur ' + currentTarget.username)
+        attackTarget(currentTarget)
       }
-    }
+    }, 3000)
   }
 })
 
 bot.on('entityDead', (entity) => {
-  if (currentTarget && entity.username === currentTarget.username) {
-    kills++
-    log('ok', `KILL #${kills} — ${entity.username} éliminé !`)
-    currentTarget = null
-    bot.pvp.stop()
-    if (pvpMode === 4) landSafely()
-  }
+  if (!currentTarget) return
+  if (entity.username !== currentTarget.username) return
+  kills++
+  log('ok', 'KILL #' + kills + ' — ' + entity.username + ' éliminé !')
+  currentTarget = null
+  bot.pvp.stop()
+  bot.clearControlStates()
+  if (pvpMode === 4) landSafely()
 })
 
-bot.on('error', err => log('err', err.message))
-bot.on('kicked', reason => log('err', 'Kicked: ' + reason))
-bot.on('end', () => log('warn', 'Déconnecté du serveur'))
+bot.on('error', (err) => log('err', 'Erreur: ' + err.message))
+bot.on('kicked', (reason) => log('err', 'Kicked: ' + reason))
+bot.on('end', () => {
+  log('warn', 'Déconnecté. Reconnexion dans 5s...')
+  setTimeout(() => {
+    log('in', 'Reconnexion...')
+    // relance le script
+    require('child_process').spawn(process.argv[0], process.argv.slice(1), {
+      stdio: 'inherit', detached: false
+    })
+    process.exit()
+  }, 5000)
+})
 
 // ══════════════════════════════════════
 //  MODES PVP
@@ -100,157 +117,140 @@ bot.on('end', () => log('warn', 'Déconnecté du serveur'))
 function setPvpMode(mode, requester) {
   pvpMode = mode
   const names = { 1: 'Facile', 2: 'Moyen', 3: 'Maître', 4: 'Pro Elytra' }
-  log('ok', `Mode PVP ${mode} (${names[mode]}) activé par ${requester}`)
-  bot.chat(`Mode PVP ${mode} (${names[mode]}) activé !`)
-
+  log('ok', 'Mode PVP ' + mode + ' (' + names[mode] + ') activé par ' + requester)
+  bot.chat('Mode PVP ' + mode + ' (' + names[mode] + ') activé !')
   equip(mode)
-
   const target = findNearestPlayer()
   if (target) {
     currentTarget = target
-    log('ok', `Cible trouvée: ${target.username}`)
+    log('ok', 'Cible: ' + target.username)
     attackTarget(target)
   } else {
-    log('warn', 'Aucun joueur proche. Le bot attaquera dès qu\'un joueur approche.')
+    log('warn', 'Aucun joueur proche. En attente...')
   }
 }
 
 function equip(mode) {
-  // Mode 1 : épée diamant simple
-  // Mode 2 : épée + bouclier
-  // Mode 3 : épée nethérite + arc + potions
-  // Mode 4 : hache nethérite + elytra + roquettes
-  const weapons = {
-    1: ['diamond_sword'],
-    2: ['diamond_sword', 'shield'],
-    3: ['netherite_sword', 'bow', 'splash_potion'],
-    4: ['netherite_axe', 'elytra', 'firework_rocket'],
+  const slots = {
+    1: [{ name: 'diamond_sword', hand: 'hand' }],
+    2: [{ name: 'diamond_sword', hand: 'hand' }, { name: 'shield', hand: 'off-hand' }],
+    3: [{ name: 'netherite_sword', hand: 'hand' }, { name: 'shield', hand: 'off-hand' }],
+    4: [{ name: 'netherite_axe', hand: 'hand' }, { name: 'elytra', hand: 'torso' }],
   }
-  const wanted = weapons[mode] || weapons[1]
-  for (const itemName of wanted) {
-    const item = bot.inventory.items().find(i => i.name.includes(itemName))
-    if (item) {
-      bot.equip(item, itemName === 'shield' ? 'off-hand' : 'hand').catch(() => {})
-    }
+  const wanted = slots[mode] || slots[1]
+  for (const slot of wanted) {
+    const item = bot.inventory.items().find(i => i.name.includes(slot.name))
+    if (item) bot.equip(item, slot.hand).catch(() => {})
   }
 }
 
 // ══════════════════════════════════════
-//  LOGIQUE D'ATTAQUE PAR MODE
+//  ATTAQUE PAR MODE
 // ══════════════════════════════════════
 function attackTarget(target) {
   if (!target || pvpMode === 0) return
   currentTarget = target
-
   if (pvpMode === 1) attackSimple(target)
   else if (pvpMode === 2) attackMoyen(target)
   else if (pvpMode === 3) attackMaitre(target)
   else if (pvpMode === 4) attackElytra(target)
 }
 
-// PVP 1 — Attaque directe simple
+// PVP 1 — Simple
 function attackSimple(target) {
-  log('in', `PVP 1 — Attaque simple sur ${target.username}`)
+  log('in', 'PVP 1 — Attaque simple: ' + target.username)
   bot.pvp.attack(target)
 }
 
-// PVP 2 — Strafe + bouclier + critiques
+// PVP 2 — Strafe + bouclier
 function attackMoyen(target) {
-  log('in', `PVP 2 — Strafe + bouclier sur ${target.username}`)
+  log('in', 'PVP 2 — Strafe + bouclier: ' + target.username)
   bot.pvp.attack(target)
-
-  // Strafe circulaire
-  let strafeDir = 1
-  const strafeInterval = setInterval(() => {
-    if (!currentTarget || pvpMode !== 2) { clearInterval(strafeInterval); return }
-    bot.setControlState('left', strafeDir === 1)
-    bot.setControlState('right', strafeDir === -1)
-    strafeDir *= -1
-  }, 600)
-
-  // Critical hit : saute avant chaque frappe
-  const critInterval = setInterval(() => {
-    if (!currentTarget || pvpMode !== 2) { clearInterval(critInterval); return }
-    if (bot.entity.onGround) bot.setControlState('jump', true)
-    setTimeout(() => bot.setControlState('jump', false), 200)
-  }, 1400)
-}
-
-// PVP 3 — Maître : critiques, potions, combo
-function attackMaitre(target) {
-  log('in', `PVP 3 — Mode maître sur ${target.username}`)
-  bot.pvp.attack(target)
-
-  // Strafe rapide
   let dir = 1
   const strafe = setInterval(() => {
-    if (!currentTarget || pvpMode !== 3) { clearInterval(strafe); return }
+    if (!currentTarget || pvpMode !== 2) {
+      clearInterval(strafe)
+      bot.setControlState('left', false)
+      bot.setControlState('right', false)
+      return
+    }
     bot.setControlState('left', dir === 1)
     bot.setControlState('right', dir === -1)
     dir *= -1
-  }, 400)
+  }, 600)
+}
 
-  // Critiques
-  const crit = setInterval(() => {
-    if (!currentTarget || pvpMode !== 3) { clearInterval(crit); return }
-    bot.setControlState('jump', true)
-    setTimeout(() => bot.setControlState('jump', false), 150)
-  }, 1200)
-
-  // Potions de splash toutes les 5s
-  const potionInterval = setInterval(() => {
-    if (!currentTarget || pvpMode !== 3) { clearInterval(potionInterval); return }
-    throwSplashPotion(target)
+// PVP 3 — Maître : strafe rapide + potions
+function attackMaitre(target) {
+  log('in', 'PVP 3 — Mode maître: ' + target.username)
+  bot.pvp.attack(target)
+  let dir = 1
+  const strafe = setInterval(() => {
+    if (!currentTarget || pvpMode !== 3) {
+      clearInterval(strafe)
+      bot.setControlState('left', false)
+      bot.setControlState('right', false)
+      return
+    }
+    bot.setControlState('left', dir === 1)
+    bot.setControlState('right', dir === -1)
+    dir *= -1
+  }, 350)
+  const potions = setInterval(() => {
+    if (!currentTarget || pvpMode !== 3) { clearInterval(potions); return }
+    throwSplashPotion(currentTarget)
   }, 5000)
 }
 
-// PVP 4 — Elytra + roquettes + one-shot dive
+// PVP 4 — Elytra dive + one-shot
 async function attackElytra(target) {
-  log('in', `PVP 4 — Mode Elytra/Dive sur ${target.username}`)
-
+  log('in', 'PVP 4 — Elytra dive sur: ' + target.username)
   try {
-    // Monte en hauteur (+20 blocs)
-    const highPos = target.position.offset(0, 20, 0)
-    const goal = new goals.GoalBlock(highPos.x, highPos.y, highPos.z)
+    // Monte en hauteur
+    const highPos = target.position.offset(0, 22, 0)
+    const goal = new goals.GoalBlock(
+      Math.floor(highPos.x),
+      Math.floor(highPos.y),
+      Math.floor(highPos.z)
+    )
     bot.pathfinder.setGoal(goal)
-
     await waitUntilAboveTarget(target, 15)
 
-    // Équipe l'elytra
+    // Équipe elytra
     const elytra = bot.inventory.items().find(i => i.name === 'elytra')
-    if (elytra) await bot.equip(elytra, 'torso')
+    if (elytra) await bot.equip(elytra, 'torso').catch(() => {})
 
-    // Active l'elytra + roquette
+    // Active l'elytra
     bot.setControlState('jump', true)
-    setTimeout(() => {
-      bot.setControlState('jump', false)
-      useFirework()
-    }, 200)
+    await sleep(200)
+    bot.setControlState('jump', false)
 
-    // Dive vers la cible
-    log('in', 'Dive attack en cours...')
-    bot.lookAt(target.position.offset(0, 1, 0))
+    // Roquette
+    useFirework()
 
-    // Équipe la hache pour one-shot
+    // Vise la cible
+    await bot.lookAt(target.position.offset(0, 1, 0))
+    log('in', 'Dive en cours...')
+
+    // Équipe hache pour one-shot
     const axe = bot.inventory.items().find(i => i.name.includes('netherite_axe'))
-    if (axe) await bot.equip(axe, 'hand')
+    if (axe) await bot.equip(axe, 'hand').catch(() => {})
 
-    // Attaque dès que proche
-    const diveCheck = setInterval(() => {
-      if (!currentTarget || pvpMode !== 4) { clearInterval(diveCheck); return }
+    // Frappe dès contact
+    const check = setInterval(() => {
+      if (!currentTarget || pvpMode !== 4) { clearInterval(check); return }
       const dist = bot.entity.position.distanceTo(currentTarget.position)
       if (dist < 4) {
-        clearInterval(diveCheck)
-        log('ok', 'Contact! ONE SHOT!')
-        bot.pvp.attack(currentTarget)
-        // Brise bouclier avec hache puis frappe
+        clearInterval(check)
+        log('ok', 'ONE SHOT !')
         bot.swingArm()
-        setTimeout(() => bot.attack(currentTarget), 200)
+        setTimeout(() => {
+          if (currentTarget) bot.attack(currentTarget)
+        }, 100)
       }
     }, 100)
   } catch (e) {
-    log('err', 'Erreur elytra: ' + e.message)
-    // Fallback mode 3 si elytra échoue
+    log('err', 'Elytra erreur: ' + e.message + ' — fallback mode 3')
     attackMaitre(target)
   }
 }
@@ -262,58 +262,60 @@ function findNearestPlayer() {
   const players = Object.values(bot.entities).filter(e =>
     e.type === 'player' && e.username !== bot.username
   )
-  if (players.length === 0) return null
+  if (!players.length) return null
   return players.sort((a, b) =>
     bot.entity.position.distanceTo(a.position) -
     bot.entity.position.distanceTo(b.position)
   )[0]
 }
 
-function waitUntilAboveTarget(target, minHeight) {
-  return new Promise((resolve) => {
-    const check = setInterval(() => {
+function waitUntilAboveTarget(target, minH) {
+  return new Promise(resolve => {
+    const t = setInterval(() => {
       const dy = bot.entity.position.y - target.position.y
-      if (dy >= minHeight) { clearInterval(check); resolve() }
-    }, 500)
-    setTimeout(() => { clearInterval(check); resolve() }, 8000)
+      if (dy >= minH) { clearInterval(t); resolve() }
+    }, 400)
+    setTimeout(() => { clearInterval(t); resolve() }, 9000)
   })
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function useFirework() {
   const fw = bot.inventory.items().find(i => i.name.includes('firework_rocket'))
-  if (fw) {
-    bot.equip(fw, 'off-hand').then(() => {
-      bot.activateItem(true)
-    }).catch(() => {})
-  }
+  if (!fw) return
+  bot.equip(fw, 'off-hand').then(() => {
+    bot.activateItem(true)
+  }).catch(() => {})
 }
 
 function throwSplashPotion(target) {
-  const potion = bot.inventory.items().find(i => i.name.includes('splash_potion'))
-  if (!potion) return
-  bot.equip(potion, 'hand').then(() => {
+  const p = bot.inventory.items().find(i => i.name.includes('splash_potion'))
+  if (!p) return
+  bot.equip(p, 'hand').then(() => {
     bot.lookAt(target.position.offset(0, 0.5, 0))
     setTimeout(() => bot.activateItem(), 100)
   }).catch(() => {})
 }
 
 function healSelf() {
-  const potion = bot.inventory.items().find(i =>
-    i.name.includes('instant_health') || i.name.includes('golden_apple')
+  const item = bot.inventory.items().find(i =>
+    i.name.includes('golden_apple') || i.name.includes('instant_health')
   )
-  if (potion) {
-    bot.equip(potion, 'hand').then(() => {
-      bot.activateItem()
-      log('ok', 'Auto-heal utilisé')
-    }).catch(() => {})
-  }
+  if (!item) return
+  bot.equip(item, 'hand').then(() => {
+    bot.activateItem()
+    log('ok', 'Auto-heal utilisé')
+  }).catch(() => {})
 }
 
 function landSafely() {
   bot.setControlState('sneak', true)
   setTimeout(() => {
     bot.setControlState('sneak', false)
-    log('in', 'Atterrissage en sécurité')
+    log('in', 'Atterrissage OK')
   }, 2000)
 }
 
@@ -322,29 +324,39 @@ function stopBot() {
   currentTarget = null
   bot.pvp.stop()
   bot.clearControlStates()
-  log('warn', 'Bot PVP arrêté')
+  log('warn', 'Bot arrêté')
   bot.chat('Bot PVP arrêté.')
 }
 
 function sendStatus() {
-  bot.chat(`Mode: PVP ${pvpMode} | HP: ${Math.round(bot.health)}/20 | Kills: ${kills} | Totems brisés: ${totems}`)
+  const modes = { 0: 'OFF', 1: 'Facile', 2: 'Moyen', 3: 'Maître', 4: 'Pro Elytra' }
+  const msg = 'Mode: ' + modes[pvpMode] +
+    ' | HP: ' + Math.round(bot.health) + '/20' +
+    ' | Kills: ' + kills +
+    ' | Totems brisés: ' + totems
+  bot.chat(msg)
+  log('in', msg)
 }
 
 function setupPathfinder() {
-  const mcData = require('minecraft-data')(bot.version)
-  const defaultMove = new Movements(bot, mcData)
-  bot.pathfinder.setMovements(defaultMove)
+  try {
+    const mcData = require('minecraft-data')(bot.version)
+    const move = new Movements(bot, mcData)
+    bot.pathfinder.setMovements(move)
+  } catch (e) {
+    log('err', 'Pathfinder setup: ' + e.message)
+  }
 }
 
-// Boucle principale : re-cherche une cible si perdue
+// Boucle : re-cherche une cible si perdue
 function startTickLoop() {
   setInterval(() => {
-    if (pvpMode === 0) return
+    if (pvpMode === 0 || waitingAfterTotem) return
     if (!currentTarget || !bot.entities[currentTarget.id]) {
       const t = findNearestPlayer()
       if (t) {
         currentTarget = t
-        log('in', `Nouvelle cible: ${t.username}`)
+        log('in', 'Nouvelle cible: ' + t.username)
         attackTarget(t)
       }
     }
@@ -352,7 +364,7 @@ function startTickLoop() {
 }
 
 // ══════════════════════════════════════
-//  CONSOLE LOCALE (terminal)
+//  CONSOLE TERMINAL
 // ══════════════════════════════════════
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
 rl.on('line', (line) => {
@@ -363,10 +375,11 @@ rl.on('line', (line) => {
   else if (l === 'pvp 4') setPvpMode(4, 'console')
   else if (l === 'stop') stopBot()
   else if (l === 'status') sendStatus()
-  else console.log('[?] Commandes: pvp 1 | pvp 2 | pvp 3 | pvp 4 | stop | status')
+  else log('warn', 'Commandes: pvp 1 | pvp 2 | pvp 3 | pvp 4 | stop | status')
 })
 
 function log(type, msg) {
   const icons = { ok: '✔', warn: '⚠', err: '✘', in: '→' }
-  console.log(`[${new Date().toLocaleTimeString()}] ${icons[type]||'•'} ${msg}`)
+  const time = new Date().toLocaleTimeString('fr-FR')
+  console.log('[' + time + '] ' + (icons[type] || '•') + ' ' + msg)
 }
