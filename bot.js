@@ -3,6 +3,13 @@ const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 const pvp = require('mineflayer-pvp').plugin
 const readline = require('readline')
 
+// Patch: supprime le warning physicTick des dépendances internes
+const _emit = require('events').EventEmitter.prototype.emit
+require('events').EventEmitter.prototype.emit = function(event, ...args) {
+  if (event === 'physicTick') return _emit.call(this, 'physicsTick', ...args)
+  return _emit.call(this, event, ...args)
+}
+
 // ══════════════════════════════════════
 //  CONFIG
 // ══════════════════════════════════════
@@ -10,7 +17,7 @@ const CONFIG = {
   host: '141.11.185.41',  // <-- ton serveur ici
   port: 50638,
   username: 'CraftBot_01',
-  version: '1.21.1',            // version correcte
+  version: '1.20.1',            // version correcte
   auth: 'offline',              // 'microsoft' si serveur premium
 }
 
